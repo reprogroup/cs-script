@@ -12,16 +12,21 @@ using Microsoft.CodeAnalysis.CSharp.Scripting;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 //http://dotnet.github.io/port-to-core/Moq4_ApiPortabilityAnalysis.htm
 
-
 public static class Extensions
 {
-    public static Assembly GetCallingAssembly(this Assembly asm)
+    public static string Directory(this Assembly asm)
     {
-        throw new NotImplementedException();
+        var file = asm.Location();
+        if (file.HasText())
+            return Path.GetDirectoryName(file);
+        else
+            return "";
     }
+
     public static string Location(this Assembly asm)
     {
         if (asm.IsDynamic())
@@ -35,12 +40,14 @@ public static class Extensions
         else
             return asm.Location;
     }
+
     public static bool IsDynamic(this Assembly asm)
     {
         //http://bloggingabout.net/blogs/vagif/archive/2010/07/02/net-4-0-and-notsupportedexception-complaining-about-dynamic-assemblies.aspx
         //Will cover both System.Reflection.Emit.AssemblyBuilder and System.Reflection.Emit.InternalAssemblyBuilder
         return asm.GetType().FullName.EndsWith("AssemblyBuilder") || asm.Location == null || asm.Location == "";
     }
+
     public static Assembly Assembly(this Type t)
     {
         return t.GetTypeInfo().Assembly;
@@ -55,10 +62,36 @@ public static class Extensions
     {
         return string.IsNullOrEmpty(txt);
     }
+
     public static bool IsLinux()
     {
         return (RuntimeInformation.IsOSPlatform(OSPlatform.Linux));
     }
+
+    public static void FileDelete(this string filePath, bool rethrow)
+    {
+        //There are the reports about
+        //anti viruses preventing file deletion
+        //See 18 Feb message in this thread https://groups.google.com/forum/#!topic/cs-script/5Tn32RXBmRE
+
+        for (int i = 0; i < 3; i++)
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                    File.Delete(filePath);
+                break;
+            }
+            catch
+            {
+                if (rethrow && i == 2)
+                    throw;
+            }
+
+            Thread.Sleep(300);
+        }
+    }
+
     public static int PathCompare(string path1, string path2)
     {
         if (IsLinux())
@@ -95,71 +128,48 @@ public static class Extensions
     /// <returns>Created instance of the type.</returns>
     static object CreateInstance(Assembly asm, string typeName, params object[] args)
     {
-        if (typeName.IndexOf("*") != -1)
+        //note typeName for FindTypes does not include namespace
+        if (typeName == "*")
         {
-            //note typeName for FindTypes does not include namespace
-            if (typeName == "*")
+            //instantiate the first type found (but not auto-generated types)
+            //Ignore Roslyn internal type: "Submission#N"; real script class will be Submission#0+Script
+            foreach (Type type in asm.GetTypes())
             {
-                //instantiate the first type found (but not auto-generated types)
-                //Ignore Roslyn internal type: "Submission#N"; real script class will be Submission#0+Script
-                foreach (Type type in asm.GetTypes())
-                {
-                    bool isMonoInternalType = (type.FullName == "<InteractiveExpressionClass>");
-                    bool isRoslynInternalType = (type.FullName.StartsWith("Submission#") && !type.FullName.Contains("+"));
+                bool isMonoInternalType = (type.FullName == "<InteractiveExpressionClass>");
+                bool isRoslynInternalType = (type.FullName.StartsWith("Submission#") && !type.FullName.Contains("+"));
 
-                    if (!isMonoInternalType && !isRoslynInternalType)
-                    {
-                        return Activator.CreateInstance(type, args);
-                    }
+                if (!isMonoInternalType && !isRoslynInternalType)
+                {
+                    return Activator.CreateInstance(type, args);
                 }
-                return null;
             }
-            else
-            {
-                Type[] types = asm.GetTypes().Where(t => t.FullName == typeName).ToArray();
-                if (types.Length == 0)
-                    throw new Exception("Type " + typeName + " cannot be found.");
-                return Activator.CreateInstance(types.First(), args);
-            }
+            return null;
         }
         else
-            throw new NotImplementedException();
-        //return Activator.CreateInstance(types.First(), args);
-        //return createInstance(asm, typeName, args);
+        {
+            Type[] types = asm.GetTypes().Where(t => t.FullName == typeName || t.FullName == ("Submission#0+" + typeName)).ToArray();
+            if (types.Length == 0)
+                throw new Exception("Type " + typeName + " cannot be found.");
+            return Activator.CreateInstance(types.First(), args);
+        }
     }
-
-    //public static string GetBaseDirectory(this Assembly assembly)
-    //{
-    //string dir = AssemblyLoadContext.GetLoadContext(assembly.L ).GetBaseDirectory(assembly);
-    //if (!String.IsNullOrEmpty(dir)) 
-    //    return dir;
-
-    //    return AppContext.BaseDirectory;
-    //}
 }
-
 
 public class AssemblyLoader : AssemblyLoadContext
 {
     public static Assembly LoadFrom(string path)
     {
-        //return new AssemblyLoader().LoadFromAssemblyPath(path);
         return AssemblyLoadContext.Default.LoadFromAssemblyPath(path);
     }
 
     public static Assembly LoadByName(string name)
     {
-        //return new AssemblyLoader().LoadFromAssemblyPath(path);
         return AssemblyLoadContext.Default.LoadFromAssemblyName(new AssemblyName(name));
     }
 
     protected override Assembly Load(AssemblyName assemblyName)
     {
-        throw new NotImplementedException();
-        //var deps = DependencyContext.Default;
-        //var res = deps.CompileLibraries.Where(d => d.Name.Contains(assemblyName.Name)).ToList();
-        //var assembly = Assembly.Load(new AssemblyName(res.First(). Name));
-        //return assembly;
+        return AssemblyLoadContext.Default.LoadFromAssemblyName(assemblyName);
     }
 }
 
@@ -187,7 +197,6 @@ class NuGet
     //        return nuGetCache;
     //    }
     //}
-
 }
 
 class Utils
@@ -200,6 +209,7 @@ class Utils
             return asmName;
     }
 }
+
 class CSSUtils
 {
     static public string[] GetDirectories(string workingDir, string rootDir)
@@ -270,12 +280,15 @@ class CSSUtils
                 case ' ':
                     sb.Append('\\').Append(c);
                     break;
+
                 case '*':
                     sb.Append(".*");
                     break;
+
                 case '?':
                     sb.Append(".");
                     break;
+
                 default:
                     sb.Append(c);
                     break;

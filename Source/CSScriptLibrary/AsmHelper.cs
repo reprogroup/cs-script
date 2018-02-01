@@ -384,6 +384,11 @@ public static class CSScriptLibraryExtensionMethods
         return CSScriptLibrary.ThirdpartyLibraries.Rubenhak.Utils.ObjectCaster<T>.BuildProxyClassCode(typeof(T), obj.GetType(), out typeFullName, injectNamespace);
     }
 
+    internal static string BuildAlignToInterfaceCode<T>(this Type type, out string typeFullName, bool injectNamespace) where T : class
+    {
+        return CSScriptLibrary.ThirdpartyLibraries.Rubenhak.Utils.ObjectCaster<T>.BuildProxyClassCode(typeof(T), type, out typeFullName, injectNamespace);
+    }
+
     /// <summary>
     /// Attempts to align (pseudo typecast) object to interface.
     /// <para>The object does not necessarily need to implement the interface formally.</para>
@@ -1053,8 +1058,8 @@ namespace CSScriptLibrary
             if (!this.disposed)
             {
                 if (asmBrowser != null)
-                    asmBrowser.Dispose();
-
+                    try { asmBrowser.Dispose(); }
+                    catch { } // Dispose should never throw no matter what
                 Unload();
             }
             disposed = true;
@@ -1145,6 +1150,16 @@ namespace CSScriptLibrary
 
         AsmBrowser asmBrowser;
 
+        // https://github.com/oleg-shilo/cs-script/issues/98
+        // public override object InitializeLifetimeService()
+        // {
+        //     var lease = (ILease)base.InitializeLifetimeService();
+        //     if (lease.CurrentState == LeaseState.Initial)
+        //         lease.InitialLeaseTime = TimeSpan.Zero;
+
+        //     return (lease);
+        // }
+
         public AsmRemoteBrowser()
         {
             AppDomain.CurrentDomain.AssemblyResolve += new ResolveEventHandler(ResolveEventHandler);
@@ -1164,7 +1179,8 @@ namespace CSScriptLibrary
         public void Dispose()
         {
             if (asmBrowser != null)
-                asmBrowser.Dispose();
+                try { asmBrowser.Dispose(); }
+                catch { } // Dispose should never throw no matter what
 
             AppDomain.CurrentDomain.AssemblyResolve -= new ResolveEventHandler(ResolveEventHandler);
         }
@@ -1601,17 +1617,9 @@ namespace CSScriptLibrary
                 if (typeName == "*")
                 {
                     //instantiate the first type found (but not auto-generated types)
-                    //Ignore Roslyn internal type: "Submission#N"; real script class will be Submission#0+Script
-                    foreach (Type type in asm.GetModules()[0].GetTypes())
-                    {
-                        bool isMonoInternalType = (type.FullName == "<InteractiveExpressionClass>");
-                        bool isRoslynInternalType = (type.FullName.StartsWith("Submission#") && !type.FullName.Contains("+"));
-
-                        if (!isMonoInternalType && !isRoslynInternalType)
-                        {
-                            return createInstance(asm, type.FullName, args);
-                        }
-                    }
+                    var type = FindFirstScriptUserType(asm);
+                    if (type != null)
+                        return createInstance(asm, type.FullName, args);
                     return null;
                 }
                 else
@@ -1624,6 +1632,24 @@ namespace CSScriptLibrary
             }
             else
                 return createInstance(asm, typeName, args);
+        }
+
+        static public Type FindFirstScriptUserType(Assembly asm, string typeName = null)
+        {
+            //find the first type found (but not auto-generated types)
+            //Ignore Roslyn internal type: "Submission#N"; real script class will be Submission#0+Script
+            foreach (Type type in asm.GetModules()[0].GetTypes())
+            {
+                bool isMonoInternalType = (type.FullName == "<InteractiveExpressionClass>");
+                bool isRoslynInternalType = (type.FullName.StartsWith("Submission#") && !type.FullName.Contains("+"));
+
+                if (!isMonoInternalType && !isRoslynInternalType)
+                {
+                    if (typeName == null || type.Name == typeName)
+                        return type;
+                }
+            }
+            return null;
         }
 
         object createInstance(Assembly asm, string typeName, object[] args)
@@ -1857,5 +1883,57 @@ namespace CSScriptLibrary
                 il.Emit(OpCodes.Ldc_I4, value);
             }
         }
+    }
+}
+
+/// <summary>
+/// Enables access to objects across application domain boundaries in applications that support
+/// remoting, giving them infinite lease time by setting <see cref="ILease.InitialLeaseTime"/>
+/// to <see cref="TimeSpan.Zero"/>.
+/// </summary>
+/// <example>
+/// <code>
+/// var code = @"using System;
+///              public class Script : MarshalByRefObjectWithInfiniteLifetime
+///              {
+///                  public void Hello(string greeting)
+///                  {
+///                      Console.WriteLine(greeting);
+///                  }
+///              }";
+///
+/// using (var helper = new AsmHelper(CSScript.CompileCode(code), null, deleteOnExit: true))
+/// {
+///     IScript script = helper.CreateAndAlignToInterface&lt;IScript&gt;("*");
+///     script.Hello("Hi there...");
+/// }
+/// </code>
+/// </example>
+/// <remarks>
+/// The script engine mechanism is not a real inter-process communication. It does use remoting,
+/// but within a single process. So it is acceptable to switch off the timeout mechanism. When
+/// the hosting application is terminated, all objects will be finalized anyway.
+///
+/// Without the modification, if there is no interaction between script and host for more than
+/// 5 minutes (the default lease time for .NET Remoting), a <see cref="RemotingException"/>
+/// may be thrown, stating:
+/// <![CDATA[Object '/<guid>/<id>.rem' has been disconnected or does not exist at the server.]]>
+/// </remarks>
+public class MarshalByRefObjectWithInfiniteLifetime : MarshalByRefObject
+{
+    /// <summary>
+    /// Obtains a lifetime service object to control the lifetime policy for this instance.
+    /// </summary>
+    public override object InitializeLifetimeService()
+    {
+        var lease = (ILease)base.InitializeLifetimeService();
+        if (lease.CurrentState == LeaseState.Initial)
+        {
+            // If the 'InitialLeaseTime' property is set to 'TimeSpan.Zero', then the lease will
+            // never time out and the object associated with it will have an infinite lifetime:
+            lease.InitialLeaseTime = TimeSpan.Zero;
+        }
+
+        return (lease);
     }
 }

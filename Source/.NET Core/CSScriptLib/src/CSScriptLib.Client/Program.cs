@@ -1,10 +1,15 @@
-﻿using CSScriptLibrary;
+﻿using CSScriptLib;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Threading.Tasks;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
+using System.IO;
+using System.Text;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Emit;
+using System.Runtime.Loader;
+using System.Net;
+using Newtonsoft.Json.Linq;
 
 namespace CSScriptLib.Client
 {
@@ -12,6 +17,9 @@ namespace CSScriptLib.Client
     {
         public static void Main(string[] args)
         {
+            // CSScript.EvaluatorConfig.DebugBuild = true;
+
+            Test.ReferencingPackagesCode(); return;
             Test.CompileCode();
             Test.CompileMethod();
             Test.CompileCSharp_7();
@@ -19,6 +27,7 @@ namespace CSScriptLib.Client
             Test.CompileDelegate1();
             Test.LoadCode();
             Test.LoadCode2();
+            Test.CrossReferenceCode();
         }
     }
 }

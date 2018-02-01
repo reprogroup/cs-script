@@ -420,23 +420,6 @@ namespace CSScriptLibrary
             return domain.Clone(Guid.NewGuid().ToString(), null);
         }
 
-        ///// <summary>
-        ///// Clones the specified <see cref="System.AppDomain"/>. The mandatory "creation" properties of the <paramref name="domain"/> are used to create the new instance of <see cref="System.AppDomain"/>.
-        ///// <para>The <paramref name="name"/> parameter is used as the "friendly name" for the cloned <see cref="System.AppDomain"/>.</para>
-        ///// </summary>
-        ///// <param name="domain">The <see cref="System.AppDomain"/> to be cloned.</param>
-        ///// <param name="name">The "friendly name" of the new <see cref="System.AppDomain"/> to be created.</param>
-        ///// <returns>The newly created <see cref="System.AppDomain"/>.</returns>
-        //public static AppDomain Clone(this AppDomain domain, string name)
-        //{
-        //    AppDomainSetup setup = new AppDomainSetup();
-        //    setup.ApplicationBase = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-        //    setup.PrivateBinPath = AppDomain.CurrentDomain.BaseDirectory;
-        //    setup.ShadowCopyFiles = "true";
-        //    setup.ShadowCopyDirectories = setup.ApplicationBase;
-        //    return AppDomain.CreateDomain(name, null, setup);
-        //}
-
 #if net4
 
         /// <summary>
@@ -895,20 +878,7 @@ namespace CSScriptLibrary
                     if (!debugBuild)
                         Utils.FileDelete(tempFile);
                     else
-                    {
-                        if (tempFiles == null)
-                        {
-                            tempFiles = new ArrayList();
-
-                            //Note: ApplicationExit will not be called if this library is hosted by a console application.
-                            //Thus CS-Script periodical cleanup will take care of the temp files
-
-                            //Application.ApplicationExit += new EventHandler(OnApplicationExit); //will not be available on .NET CE
-                            //AppDomain.CurrentDomain.DomainUnload += new EventHandler(CurrentDomain_DomainUnload);
-                            AppDomain.CurrentDomain.ProcessExit += new EventHandler(OnApplicationExit);
-                        }
-                        tempFiles.Add(tempFile);
-                    }
+                        CSScript.NoteTempFile(tempFile);
                 }
             }
         }
@@ -1804,6 +1774,16 @@ namespace CSScriptLibrary
                         tempFiles.Add(tempFile);
                 }
             }
+        }
+
+        internal static void NoteTempFile(string file)
+        {
+            if (tempFiles == null)
+            {
+                tempFiles = new ArrayList();
+                AppDomain.CurrentDomain.ProcessExit += new EventHandler(OnApplicationExit);
+            }
+            tempFiles.Add(file);
         }
 
         static void ScheduleCleanup()

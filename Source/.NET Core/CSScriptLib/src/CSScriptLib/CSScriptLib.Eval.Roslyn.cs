@@ -51,6 +51,7 @@ using csscript;
 using CSScriptLib;
 using System.Text;
 using Microsoft.CodeAnalysis.Emit;
+using System.Runtime.Serialization;
 
 // <summary>
 //<package id="Microsoft.Net.Compilers" version="1.2.0-beta-20151211-01" targetFramework="net45" developmentDependency="true" />
@@ -63,30 +64,33 @@ using Microsoft.CodeAnalysis.Emit;
 // Everything (e.g. class code) is compiled as a nested class with the parent class name
 // "Submission#N" and the number-sign makes it extremely difficult to reference from other scripts
 // </summary>
-namespace CSScriptLibrary
+namespace CSScriptLib
 {
     /// <summary>
-    /// Method extensions for Roslyn.<see cref="Microsoft.CodeAnalysis.CSharp.Scripting"/>
+    /// The exception that is thrown when a the script compiler error occurs.
     /// </summary>
-    public class CSScriptRoslynExtensions
+    [Serializable]
+    public class CompilerException : ApplicationException
     {
         /// <summary>
-        /// Single step evaluating method for Roslyn compiler. Compiles specified code, loads the compiled assembly and returns it to the caller.
+        /// Initializes a new instance of the <see cref="CompilerException"/> class.
         /// </summary>
-        /// <param name="code">The code.</param>
-        /// <returns></returns>
-        public static Assembly Load_obsolete(string code)
-        {
-            var asmName = CSharpScript.Create(code, ScriptOptions.Default)
-                                      .RunAsync()
-                                      .Result
-                                      .Script
-                                      .GetCompilation()
-                                      .AssemblyName;
+        public CompilerException() { }
 
-            throw new NotImplementedException();
-            //return Assembly.Load(asmName);
-            //return AppDomain.CurrentDomain.GetAssemblies().First(a => a.FullName.StartsWith(asmName, StringComparison.OrdinalIgnoreCase));
+        /// <summary>
+        /// Initializes a new instance of the <see cref="CompilerException"/> class.
+        /// </summary>
+        /// <param name="info">The object that holds the serialized object data.</param>
+        /// <param name="context">The contextual information about the source or destination.</param>
+        public CompilerException(SerializationInfo info, StreamingContext context) : base(info, context) { }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="CompilerException"/> class.
+        /// </summary>
+        /// <param name="message">The message.</param>
+        public CompilerException(string message)
+            : base(message)
+        {
         }
     }
 
@@ -99,16 +103,15 @@ namespace CSScriptLibrary
 
         /// <summary>
         /// Gets or sets a value indicating whether to compile script with debug symbols.
-        /// <para>Note, affect of setting <c>DebugBuild</c> will always depend on the compiler implementation:
-        /// <list type="bullet">
-        ///    <item><term>CodeDom</term><description>Fully supports. Generates degugging symbols (script can be debugged) and defines <c>DEBUG</c> and <c>TRACE</c> conditional symbols</description> </item>
-        ///    <item><term>Mono</term><description>Partially supports. Defines <c>DEBUG</c> and <c>TRACE</c> conditional symbols</description> </item>
-        ///    <item><term>Roslyn</term><description>Doesn't supports at all.</description> </item>
-        /// </list>
+        /// <para>Note, setting <c>DebugBuild</c> will only affect the current instance of Evaluator.
+        /// If you want to emit debug symbols for all instances of Evaluator then use
+        /// <see cref="CSScriptLib.CSScript.EvaluatorConfig"/>.DebugBuild.
         /// </para>
         /// </summary>
         /// <value><c>true</c> if 'debug build'; otherwise, <c>false</c>.</value>
-        public bool DebugBuild { get; set; }
+        public bool? DebugBuild { get; set; }
+
+        bool IsDebug { get => DebugBuild ?? CSScript.EvaluatorConfig.DebugBuild; }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RoslynEvaluator" /> class.
@@ -120,19 +123,19 @@ namespace CSScriptLibrary
         }
 
         /// <summary>
-        /// Clones itself as <see cref="CSScriptLibrary.IEvaluator"/>.
+        /// Clones itself as <see cref="CSScriptLib.IEvaluator"/>.
         /// <para>
-        /// This method returns a freshly initialized copy of the <see cref="CSScriptLibrary.IEvaluator"/>.
+        /// This method returns a freshly initialized copy of the <see cref="CSScriptLib.IEvaluator"/>.
         /// The cloning 'depth' can be controlled by the <paramref name="copyRefAssemblies"/>.
         /// </para>
         /// <para>
-        /// This method is a convenient technique when multiple <see cref="CSScriptLibrary.IEvaluator"/> instances
+        /// This method is a convenient technique when multiple <see cref="CSScriptLib.IEvaluator"/> instances
         /// are required (e.g. for concurrent script evaluation).
         /// </para>
         /// </summary>
-        /// <param name="copyRefAssemblies">if set to <c>true</c> all referenced assemblies from the parent <see cref="CSScriptLibrary.IEvaluator"/>
+        /// <param name="copyRefAssemblies">if set to <c>true</c> all referenced assemblies from the parent <see cref="CSScriptLib.IEvaluator"/>
         /// will be referenced in the cloned copy.</param>
-        /// <returns>The freshly initialized instance of the <see cref="CSScriptLibrary.IEvaluator"/>.</returns>
+        /// <returns>The freshly initialized instance of the <see cref="CSScriptLib.IEvaluator"/>.</returns>
         public IEvaluator Clone(bool copyRefAssemblies = true)
         {
             var clone = new RoslynEvaluator();
@@ -195,72 +198,110 @@ namespace CSScriptLibrary
         /// <returns>The compiled assembly.</returns>
         public Assembly CompileCode(string scriptText)
         {
-            if (!DisableReferencingFromCode)
-                ReferenceAssembliesFromCode(scriptText);
+            return CompileCode(scriptText, null);
+        }
 
-            //http://www.strathweb.com/2016/03/roslyn-scripting-on-coreclr-net-cli-and-dnx-and-in-memory-assemblies/
-            //http://stackoverflow.com/questions/37526165/compiling-and-running-code-at-runtime-in-net-core-1-0
-            //https://daveaglick.com/posts/compiler-platform-scripting
-            //var hookCode = @" class EntryPoint{}; return typeof(EntryPoint).Assembly;";
-            //return (Assembly)CSharpScript.EvaluateAsync(scriptText + hookCode).Result;
-
-            var compilation = CSharpScript.Create(scriptText, CompilerSettings)
-                                          .RunAsync()
-                                          .Result
-                                          .Script
-                                          .GetCompilation();
-
-            using (var ms = new MemoryStream())
+        Assembly CompileCode(string scriptText, string scriptFile)
+        {
+            string tempScriptFile = null;
+            try
             {
-                EmitResult result = compilation.Emit(ms);
-
-                if (!result.Success)
+                if (!DisableReferencingFromCode)
                 {
-                    IEnumerable<Diagnostic> failures = result.Diagnostics.Where(d => d.IsWarningAsError ||
-                                                                                     d.Severity == DiagnosticSeverity.Error);
-
-                    var message = new StringBuilder();
-                    foreach (Diagnostic diagnostic in failures)
-                        message.AppendFormat($"{diagnostic.Id}: {diagnostic.GetMessage()}");
-                    throw new Exception("Compile error(s): " + message);
+                    var localDir = Path.GetDirectoryName(this.GetType().Assembly.Location);
+                    ReferenceAssembliesFromCode(scriptText, localDir);
                 }
-                else
-                {
-                    ms.Seek(0, SeekOrigin.Begin);
 
-#if NET451
-                   Assembly assembly = Assembly.Load(ms.ToArray());
-#else
-                    AssemblyLoadContext context = AssemblyLoadContext.Default;
-                    Assembly assembly = context.LoadFromStream(ms);
-                    return assembly;
-#endif
+                if (this.IsDebug)
+                {
+                    if (scriptFile == null)
+                    {
+                        tempScriptFile = CSScript.GetScriptTempFile();
+                        File.WriteAllText(tempScriptFile, scriptText);
+                    }
+
+                    scriptText = $"#line 1 \"{scriptFile ?? tempScriptFile}\"{Environment.NewLine}" + scriptText;
+                }
+
+                var compilation = CSharpScript.Create(scriptText, CompilerSettings)
+                                              .GetCompilation();
+
+                if (this.IsDebug)
+                    compilation = compilation.WithOptions(compilation.Options
+                                             .WithOptimizationLevel(OptimizationLevel.Debug)
+                                             .WithOutputKind(OutputKind.DynamicallyLinkedLibrary));
+
+                using (var pdb = new MemoryStream())
+                using (var asm = new MemoryStream())
+                {
+                    var emitOptions = new EmitOptions(false, DebugInformationFormat.PortablePdb);
+
+                    EmitResult result;
+                    if (IsDebug)
+                        result = compilation.Emit(asm, pdb, options: emitOptions);
+                    else
+                        result = compilation.Emit(asm);
+
+                    if (!result.Success)
+                    {
+                        IEnumerable<Diagnostic> failures = result.Diagnostics.Where(d => d.IsWarningAsError ||
+                                                                                         d.Severity == DiagnosticSeverity.Error);
+
+                        var message = new StringBuilder();
+                        foreach (Diagnostic diagnostic in failures)
+                        {
+                            string error_location = "";
+                            if (diagnostic.Location.IsInSource)
+                            {
+                                var error_pos = diagnostic.Location.GetLineSpan().StartLinePosition;
+
+                                int error_line = error_pos.Line + 1;
+                                int error_column = error_pos.Character + 1;
+
+                                // the actual source contains an injected '#line' directive f compiled with debug symbols
+                                if (IsDebug)
+                                    error_line--;
+
+                                error_location = $"{diagnostic.Location.SourceTree.FilePath}({error_line},{ error_column}): ";
+                            }
+                            message.AppendLine($"{error_location}error {diagnostic.Id}: {diagnostic.GetMessage()}");
+                        }
+                        var errors = message.ToString();
+                        throw new CompilerException(errors);
+                    }
+                    else
+                    {
+                        asm.Seek(0, SeekOrigin.Begin);
+                        if (IsDebug)
+                        {
+                            pdb.Seek(0, SeekOrigin.Begin);
+                            return AssemblyLoadContext.Default.LoadFromStream(asm, pdb);
+                        }
+                        else
+                            return AssemblyLoadContext.Default.LoadFromStream(asm);
+                    }
                 }
             }
-
-            //var asmName = CSharpScript.Create(scriptText, CompilerSettings)
-            //                          .RunAsync()
-            //                          .Result
-            //                          .Script
-            //                          .GetCompilation()
-            //                          .AssemblyName;
-
-            //var asms = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.FullName).ToArray();
-            //Assembly result = AssemblyLoader.LoadByName(asmName);
-            //return result;
+            finally
+            {
+                if (this.IsDebug)
+                    CSScript.NoteTempFile(tempScriptFile);
+                else
+                    tempScriptFile.FileDelete(false);
+            }
         }
 
         /// <summary>
         /// Wraps C# code fragment into auto-generated class (type name <c>DynamicClass</c>) and evaluates it.
         /// <para>
-        /// This method is a logical equivalent of <see cref="CSScriptLibrary.IEvaluator.CompileCode"/> but is allows you to define
+        /// This method is a logical equivalent of <see cref="CSScriptLib.IEvaluator.CompileCode"/> but is allows you to define
         /// your script class by specifying class method instead of whole class declaration.</para>
         /// </summary>
         /// <example>
         ///<code>
         /// dynamic script = CSScript.RoslynEvaluator
         ///                          .CompileMethod(@"int Sum(int a, int b)
-        ///                                              {
+        ///                                           {
         ///                                               return a+b;
         ///                                           }")
         ///                          .CreateObject("*");
@@ -278,7 +319,7 @@ namespace CSScriptLibrary
 
         /// <summary>
         /// Wraps C# code fragment into auto-generated class (type name <c>DynamicClass</c>), evaluates it and loads the class to the current AppDomain.
-        /// <para>Returns non-typed <see cref="CSScriptLibrary.MethodDelegate"/> for class-less style of invoking.</para>
+        /// <para>Returns non-typed <see cref="CSScriptLib.MethodDelegate"/> for class-less style of invoking.</para>
         /// </summary>
         /// <example>
         /// <code>
@@ -292,7 +333,7 @@ namespace CSScriptLibrary
         /// </code>
         /// </example>
         /// <param name="code">The C# code.</param>
-        /// <returns> The instance of a non-typed <see cref="CSScriptLibrary.MethodDelegate"/></returns>
+        /// <returns> The instance of a non-typed <see cref="CSScriptLib.MethodDelegate"/></returns>
         public MethodDelegate CreateDelegate(string code)
         {
             string scriptText = CSScript.WrapMethodToAutoClass(code, true, false);
@@ -312,7 +353,7 @@ namespace CSScriptLibrary
 
         /// <summary>
         /// Wraps C# code fragment into auto-generated class (type name <c>DynamicClass</c>), evaluates it and loads the class to the current AppDomain.
-        /// <para>Returns typed <see cref="CSScriptLibrary.MethodDelegate{T}"/> for class-less style of invoking.</para>
+        /// <para>Returns typed <see cref="CSScriptLib.MethodDelegate{T}"/> for class-less style of invoking.</para>
         /// </summary>
         /// <typeparam name="T">The delegate return type.</typeparam>
         /// <example>
@@ -327,7 +368,7 @@ namespace CSScriptLibrary
         /// </code>
         /// </example>
         /// <param name="code">The C# code.</param>
-        /// <returns> The instance of a typed <see cref="CSScriptLibrary.MethodDelegate{T}"/></returns>
+        /// <returns> The instance of a typed <see cref="CSScriptLib.MethodDelegate{T}"/></returns>
         public MethodDelegate<T> CreateDelegate<T>(string code)
         {
             string scriptText = CSScript.WrapMethodToAutoClass(code, true, false);
@@ -376,25 +417,35 @@ namespace CSScriptLibrary
 
             var parser = new csscript.CSharpParser(code);
 
-            var globalProbingDirs = Environment.ExpandEnvironmentVariables(CSScript.GlobalSettings.SearchDirs).Split(",;".ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
+            var globalProbingDirs = CSScript.GlobalSettings.SearchDirs
+                                                           .Select(Environment.ExpandEnvironmentVariables)
+                                                           .Where(x => x.Any());
 
-            var dirs = searchDirs
-                                 //zos
-                                 //.Concat(new string[] { Assembly.GetCallingAssembly().GetAssemblyDirectoryName() })
-                                 .Concat(parser.ExtraSearchDirs)
+            var dirs = searchDirs.Concat(parser.ExtraSearchDirs)
                                  .Concat(globalProbingDirs)
                                  .ToArray();
 
             dirs = dirs.Select(x => Path.GetFullPath(x)).Distinct().ToArray();
 
             var asms = new List<string>(parser.RefAssemblies);
-
-            if (!parser.IgnoreNamespaces.Any(x => x == "*"))
-                asms.AddRange(parser.RefNamespaces.Except(parser.IgnoreNamespaces));
+            var unresolved_asms = new List<string>();
 
             foreach (var asm in asms)
-                foreach (string asmFile in AssemblyResolver.FindAssembly(asm, dirs))
-                    retval.Add(asmFile);
+            {
+                var files = AssemblyResolver.FindAssembly(asm, dirs);
+                if (files.Any())
+                    retval.AddRange(files);
+                else
+                    unresolved_asms.Add(asm);
+            }
+
+            if (!parser.IgnoreNamespaces.Any(x => x == "*"))
+                foreach (var asm in parser.RefNamespaces.Except(parser.IgnoreNamespaces))
+                    foreach (string asmFile in AssemblyResolver.FindAssembly(asm, dirs))
+                        retval.Add(asmFile);
+
+            foreach (var asm in unresolved_asms)
+                this.ReferenceAssemblyByName(asm);
 
             return retval.Distinct().ToArray();
         }
@@ -455,33 +506,8 @@ namespace CSScriptLibrary
         /// <returns>Aligned to the <c>T</c> interface instance of the class defined in the script.</returns>
         public T LoadCode<T>(string scriptText, params object[] args) where T : class
         {
-            throw new NotImplementedException();
-            ////Debug.Assert(false);
-            //if (!DisableReferencingFromCode)
-            //    ReferenceAssembliesFromCode(scriptText);
-
-            ////compile script and proxy as two separate actions
-            //var scriptComp = CSharpScript.Create(scriptText, CompilerSettings).RunAsync().Result;
-            //var scriptAsmName = scriptComp.Script.GetCompilation().AssemblyName;
-            //Assembly scriptAsm = AppDomain.CurrentDomain.GetAssemblies().First(a => a.FullName.StartsWith(scriptAsmName, StringComparison.OrdinalIgnoreCase));
-
-            //var scriptObject = scriptAsm.CreateObject("*", args);
-            //Type scriptType = scriptObject.GetType();
-
-            //this.ReferenceAssemblyOf<T>();
-            //string type = "";
-            //string proxyClass = scriptObject.BuildAlignToInterfaceCode<T>(out type, false);
-            //string parentClass = scriptType.FullName.Split('+').First(); //Submission#0+Script
-            //proxyClass = proxyClass.Replace(parentClass + ".", ""); //Compiler cannot compile Submission#0.Script so convert it into Script
-
-            //var proxyComp = scriptComp.ContinueWithAsync(proxyClass).Result;
-            //var proxyAsmName = proxyComp.Script.GetCompilation().AssemblyName;
-
-            //Assembly proxyAsm = AppDomain.CurrentDomain.GetAssemblies().First(a => a.FullName.StartsWith(proxyAsmName, StringComparison.OrdinalIgnoreCase));
-
-            //var proxyObject = proxyAsm.CreateObject("*", new object[] { scriptObject });
-
-            //return (T) proxyObject;
+            this.ReferenceAssemblyOf<T>();
+            return (T)this.CompileCode(scriptText).CreateObject("*", args);
         }
 
         /// <summary>
@@ -524,10 +550,11 @@ namespace CSScriptLibrary
         /// int result = script.Sum(1, 2);
         /// </code>
         /// </example>/// <param name="scriptFile">The C# script file.</param>
+        /// <param name="args">Optional non-default constructor arguments.</param>
         /// <returns>Instance of the class defined in the script file.</returns>
-        public object LoadFile(string scriptFile)
+        public object LoadFile(string scriptFile, params object[] args)
         {
-            return LoadCode(File.ReadAllText(scriptFile));
+            return CompileCode(File.ReadAllText(scriptFile), scriptFile).CreateObject("*", args);
         }
 
         /// <summary>
@@ -552,10 +579,11 @@ namespace CSScriptLibrary
         /// </example>
         /// <typeparam name="T">The type of the interface type the script class instance should be aligned to.</typeparam>
         /// <param name="scriptFile">The C# script text.</param>
+        /// <param name="args">Optional non-default constructor arguments.</param>
         /// <returns>Aligned to the <c>T</c> interface instance of the class defined in the script file.</returns>
-        public T LoadFile<T>(string scriptFile) where T : class
+        public T LoadFile<T>(string scriptFile, params object[] args) where T : class
         {
-            return LoadCode<T>(File.ReadAllText(scriptFile));
+            return (T)CompileCode(File.ReadAllText(scriptFile), scriptFile).CreateObject("*", args);
         }
 
         /// <summary>
@@ -633,7 +661,7 @@ namespace CSScriptLibrary
         /// </summary>
         /// <param name="code">The script code.</param>
         /// <param name="searchDirs">The assembly search/probing directories.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssembliesFromCode(string code, params string[] searchDirs)
         {
             foreach (var asm in GetReferencedAssemblies(code, searchDirs))
@@ -647,10 +675,10 @@ namespace CSScriptLibrary
         /// be referenced again.</para>
         /// </summary>
         /// <param name="assembly">The path to the assembly file.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssembly(string assembly)
         {
-            var globalProbingDirs = Environment.ExpandEnvironmentVariables(CSScript.GlobalSettings.SearchDirs).Split(",;".ToCharArray(), StringSplitOptions.RemoveEmptyEntries).ToList();
+            var globalProbingDirs = CSScript.GlobalSettings.SearchDirs.ToList();
 
             //zos
             //globalProbingDirs.Add(Assembly.GetCallingAssembly().GetAssemblyDirectoryName());
@@ -673,17 +701,16 @@ namespace CSScriptLibrary
         /// </para>
         /// </summary>
         /// <param name="assembly">The assembly instance.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssembly(Assembly assembly)
         {
             //Microsoft.Net.Compilers.1.2.0 - beta
             if (assembly.Location().IsEmpty())
                 throw new Exception(
                     "Current version of Microsoft.CodeAnalysis.Scripting.dll doesn't support referencing assemblies " +
-                    "which are not loaded from the file location. You may want to use CS-Script MonoEvaluator (Mono.CSharp)");
+                    "which are not loaded from the file location.");
 
             if (!CompilerSettings.MetadataReferences.OfType<PortableExecutableReference>().Any(r => r.FilePath.IsSamePath(assembly.Location())))
-                //if (!CompilerSettings.MetadataReferences.Cast<UnresolvedMetadataReference>().Any(r => r.FilePath.IsSamePath(assembly.Location())))
                 //Future assembly aliases support:
                 //MetadataReference.CreateFromFile("asm.dll", new MetadataReferenceProperties().WithAliases(new[] { "lib_a", "external_lib_a" } })
                 CompilerSettings = CompilerSettings.AddReferences(assembly);
@@ -697,10 +724,9 @@ namespace CSScriptLibrary
         /// <para>It is an equivalent of <c>Evaluator.ReferenceAssembly(Assembly.LoadWithPartialName(assemblyPartialName))</c></para>
         /// </summary>
         /// <param name="assemblyPartialName">Partial name of the assembly.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssemblyByName(string assemblyPartialName)
         {
-            //return ReferenceAssembly(AssemblyLoader.LoadWithPartialName(assemblyPartialName));
             return ReferenceAssembly(AssemblyLoader.LoadByName(assemblyPartialName));
         }
 
@@ -710,7 +736,7 @@ namespace CSScriptLibrary
         /// <param name="namespace">The namespace.</param>
         /// <param name="resolved">Set to <c>true</c> if the namespace was successfully resolved (found) and
         /// the reference was added; otherwise, <c>false</c>.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator TryReferenceAssemblyByNamespace(string @namespace, out bool resolved)
         {
             resolved = false;
@@ -727,7 +753,7 @@ namespace CSScriptLibrary
         /// <para>Adds assembly reference if the namespace was successfully resolved (found) and, otherwise does nothing</para>
         /// </summary>
         /// <param name="namespace">The namespace.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssemblyByNamespace(string @namespace)
         {
             foreach (string asm in AssemblyResolver.FindGlobalAssembly(@namespace))
@@ -743,7 +769,7 @@ namespace CSScriptLibrary
         /// </para>
         /// </summary>
         /// <param name="obj">The object, which belongs to the assembly to be referenced.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssemblyOf(object obj)
         {
             ReferenceAssembly(obj.GetType().Assembly());
@@ -758,7 +784,7 @@ namespace CSScriptLibrary
         /// </para>
         /// </summary>
         /// <typeparam name="T">The type which is implemented in the assembly to be referenced.</typeparam>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceAssemblyOf<T>()
         {
             return ReferenceAssembly(typeof(T).Assembly());
@@ -767,11 +793,11 @@ namespace CSScriptLibrary
 #if net35
         /// <summary>
         /// References the assemblies the are already loaded into the current <c>AppDomain</c>.
-        /// <para>This method is an equivalent of <see cref="CSScriptLibrary.IEvaluator.ReferenceDomainAssemblies"/>
+        /// <para>This method is an equivalent of <see cref="CSScriptLib.IEvaluator.ReferenceDomainAssemblies"/>
         /// with the hard codded <c>DomainAssemblies.AllStaticNonGAC</c> input parameter.
         /// </para>
         /// </summary>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
         public IEvaluator ReferenceDomainAssemblies()
         {
             return ReferenceDomainAssemblies(DomainAssemblies.AllStaticNonGAC);
@@ -782,7 +808,7 @@ namespace CSScriptLibrary
         /// References the assemblies the are already loaded into the current <c>AppDomain</c>.
         /// </summary>
         /// <param name="assemblies">The type of assemblies to be referenced.</param>
-        /// <returns>The instance of the <see cref="CSScriptLibrary.IEvaluator"/> to allow  fluent interface.</returns>
+        /// <returns>The instance of the <see cref="CSScriptLib.IEvaluator"/> to allow  fluent interface.</returns>
 #if net35
         public IEvaluator ReferenceDomainAssemblies(DomainAssemblies assemblies)
 #else
@@ -790,8 +816,14 @@ namespace CSScriptLibrary
         public IEvaluator ReferenceDomainAssemblies(DomainAssemblies assemblies = DomainAssemblies.AllStaticNonGAC)
 #endif
         {
+            foreach (var name in Assembly.GetCallingAssembly().GetReferencedAssemblies())
+            {
+                var asm = Assembly.Load(name); // the asm is already loaded by the host anyway
+                ReferenceAssembly(asm);
+            }
+            // there are not ApPDomain assemblies but the assemblies referenced by the host
             return this;
-            throw new NotImplementedException();
+            throw new NotImplementedException("Not available on .NET Core");
 
             //NOTE: It is important to avoid loading the runtime itself (mscorelib) as it
             //will break the code evaluation (compilation).
@@ -831,7 +863,7 @@ namespace CSScriptLibrary
         /// <param name="referenceDomainAssemblies">if set to <c>true</c> the default assemblies of the current AppDomain
         /// will be referenced (see <see cref="ReferenceDomainAssemblies(DomainAssemblies)"/> method).
         /// </param>
-        /// <returns>The freshly initialized instance of the <see cref="CSScriptLibrary.IEvaluator"/>.</returns>
+        /// <returns>The freshly initialized instance of the <see cref="CSScriptLib.IEvaluator"/>.</returns>
         public IEvaluator Reset(bool referenceDomainAssemblies = true)
         {
             CompilerSettings = ScriptOptions.Default;

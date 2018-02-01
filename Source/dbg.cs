@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System;
 using System.Collections;
 using System.IO;
@@ -95,11 +96,6 @@ partial class dbg
             var arr = obj as IList;
             return "{IList} - Count: " + arr.Count;
         }
-        else if (obj is IDictionary)
-        {
-            var arr = obj as IDictionary;
-            return "{IDictionary} - Count: " + arr.Count;
-        }
         else
         {
             var count = obj.Cast<object>().Count();
@@ -107,9 +103,15 @@ partial class dbg
         }
     }
 
+    static public string CustomPrimitiveTypes = "Newtonsoft.Json.Linq.JValue;";
+
     static bool isPrimitive(object obj)
     {
-        return (obj == null || obj.GetType().IsPrimitive || obj is decimal || obj is string);
+        if (obj == null || obj.GetType().IsPrimitive || obj is decimal || obj is string)
+            return true;
+        else if (CustomPrimitiveTypes != null)
+            return CustomPrimitiveTypes.Split(new char[] { ';' }).Contains(obj.GetType().ToString());
+        return false;
     }
 
     void WriteObject(object obj)
@@ -134,29 +136,13 @@ partial class dbg
                     writeLine("... truncated ...");
                     break;
                 }
-
-                if (item is DictionaryEntry)
+                write("[" + (index++) + "]: ");
+                if (level < (depth + 1))
                 {
-                    var entry = (DictionaryEntry)item;
-
-                    write("[" + entry.Key + "]: ");
-                    if (level < (depth + 1))
-                    {
-                        level++;
-                        WriteValue(entry.Value);
-                        level--;
-                    }
-                }
-                else
-                {
-                    write("[" + (index++) + "]: ");
-                    if (level < (depth + 1))
-                    {
-                        level++;
-                        WriteValue(item);
-                        // WriteObject(item);
-                        level--;
-                    }
+                    level++;
+                    WriteValue(item);
+                    // WriteObject(item);
+                    level--;
                 }
                 writeLine("");
             }
@@ -170,6 +156,7 @@ partial class dbg
                 write(Indent);
                 write("." + m.Name);
                 write(" = ");
+
                 object value = GetMemberValue(obj, m);
 
                 if (isPrimitive(value) || (level >= depth))
@@ -293,4 +280,6 @@ static class Extension
                          .Replace("`4", "<T, T1, T2, T3>");
         }
     }
+
+    // for reflecting dynamic objects look at dbg.dynamic.cs
 }

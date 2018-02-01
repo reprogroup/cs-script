@@ -11,6 +11,7 @@ void main(string[] args)
 
     var source = File.ReadAllText(Path.Combine(dir, "dbg.cs"));
 
+    Console.WriteLine(source);
     source = escape(source);
 
     var res = Path.Combine(dir, "dbg.res.cs");
